@@ -1,0 +1,9 @@
+services:
+  kisisel-ai-asistan:
+    build: .
+    container_name: kisisel-ai-asistan
+    ports:
+      - "8502:8501"
+    volumes:
+      - ./.streamlit:/app/.streamlit
+    restart: unless-stopped
