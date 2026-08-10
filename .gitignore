@@ -1,0 +1,7 @@
+.streamlit/secrets.toml
+gecici.pdf
+sohbetler.json
+kullanicilar.json
+oturumlar.json
+__pycache__/
+*.pyc

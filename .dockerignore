@@ -1,0 +1,10 @@
+# API anahtarını içerdiği için kesinlikle imajın içine girmemeli
+.streamlit/secrets.toml
+
+# Gereksiz/geçici dosyalar
+gecici.pdf
+sohbetler.json
+__pycache__/
+*.pyc
+.git/
+.gitignore
