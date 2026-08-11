@@ -1,4 +1,5 @@
 streamlit>=1.40.0
+supabase
 google-generativeai
 langchain
 langchain-community
