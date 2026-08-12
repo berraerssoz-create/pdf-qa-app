@@ -386,7 +386,7 @@ def sifre_dogrula(sifre: str, salt: str, hash_str: str) -> bool:
     return hashlib.sha256((salt + sifre).encode("utf-8")).hexdigest() == hash_str
 
 
-def kullanici_kayit_ol(kullanici_adi: str, sifre: str):
+def kullanici_kayit_ol(kullanici_adi: str, sifre: str, email: str):
     sb = supabase_baglantisi()
     mevcut = sb.table("kullanicilar").select("kullanici_adi").eq("kullanici_adi", kullanici_adi).execute()
     if mevcut.data:
@@ -396,6 +396,8 @@ def kullanici_kayit_ol(kullanici_adi: str, sifre: str):
         "kullanici_adi": kullanici_adi,
         "sifre_hash": hash_str,
         "salt": salt,
+        "email": email,
+        "otp_aktif": True,
     }).execute()
     return True, t("kayit_basarili")
 
@@ -608,17 +610,20 @@ if not st.session_state.giris_yapildi:
 
         with sekme_kayit:
             kayit_kadi = st.text_input(t("kullanici_adi_etiket"), key="kayit_kadi")
+            kayit_email = st.text_input("E-posta", key="kayit_email")
             kayit_sifre = st.text_input(t("sifre_etiket"), type="password", key="kayit_sifre")
             kayit_sifre2 = st.text_input(t("sifre_tekrar_etiket"), type="password", key="kayit_sifre2")
             if st.button(t("kayit_ol_buton"), key="kayit_buton"):
-                if not kayit_kadi or not kayit_sifre:
+                if not kayit_kadi or not kayit_sifre or not kayit_email:
                     st.warning(t("alanlari_doldur_uyari"))
+                elif "@" not in kayit_email:
+                    st.warning("Geçerli bir e-posta adresi gir.")
                 elif len(kayit_sifre) < 4:
                     st.warning(t("sifre_kisa_uyari"))
                 elif kayit_sifre != kayit_sifre2:
                     st.warning(t("sifreler_eslesmiyor_uyari"))
                 else:
-                    basarili, mesaj = kullanici_kayit_ol(kayit_kadi, kayit_sifre)
+                    basarili, mesaj = kullanici_kayit_ol(kayit_kadi, kayit_sifre, kayit_email)
                     if basarili:
                         st.success(mesaj)
                     else:
