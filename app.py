@@ -469,6 +469,8 @@ def otp_kodu_dogrula(kullanici_adi: str, girilen_kod: str) -> bool:
         son_tarih = datetime.fromisoformat(son_tarih_str.replace("Z", "+00:00"))
     except ValueError:
         return False
+    if son_tarih.tzinfo is None:
+        son_tarih = son_tarih.replace(tzinfo=timezone.utc)
     if datetime.now(timezone.utc) > son_tarih:
         return False
     return girilen_kod.strip() == kayitli_kod
