@@ -424,13 +424,39 @@ def kullanici_otp_bilgisi(kullanici_adi: str):
     sb = supabase_baglantisi()
     sonuc = (
         sb.table("kullanicilar")
-        .select("email, otp_secret, otp_aktif, otp_kod_son_tarih")
+        .select("email, otp_secret, otp_aktif, otp_kod_son_tarih, otp_son_dogrulama")
         .eq("kullanici_adi", kullanici_adi)
         .execute()
     )
     if sonuc.data:
         return sonuc.data[0]
-    return {"email": None, "otp_secret": None, "otp_aktif": False, "otp_kod_son_tarih": None}
+    return {
+        "email": None, "otp_secret": None, "otp_aktif": False,
+        "otp_kod_son_tarih": None, "otp_son_dogrulama": None,
+    }
+
+
+def otp_guvenilir_mi(kullanici_adi: str, gun_sayisi: int = 10) -> bool:
+    """Kullanici son 'gun_sayisi' gun icinde basariyla OTP dogruladiysa,
+    tekrar kod sormaya gerek olmadigini soyler."""
+    bilgi = kullanici_otp_bilgisi(kullanici_adi)
+    son_dogrulama_str = bilgi.get("otp_son_dogrulama")
+    if not son_dogrulama_str:
+        return False
+    try:
+        son_dogrulama = datetime.fromisoformat(son_dogrulama_str.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if son_dogrulama.tzinfo is None:
+        son_dogrulama = son_dogrulama.replace(tzinfo=timezone.utc)
+    return datetime.now(timezone.utc) - son_dogrulama < timedelta(days=gun_sayisi)
+
+
+def otp_dogrulamayi_kaydet(kullanici_adi: str):
+    sb = supabase_baglantisi()
+    sb.table("kullanicilar").update({
+        "otp_son_dogrulama": datetime.now(timezone.utc).isoformat(),
+    }).eq("kullanici_adi", kullanici_adi).execute()
 
 
 def email_kod_gonder(alici_email: str, kod: str):
@@ -473,7 +499,10 @@ def otp_kodu_dogrula(kullanici_adi: str, girilen_kod: str) -> bool:
         son_tarih = son_tarih.replace(tzinfo=timezone.utc)
     if datetime.now(timezone.utc) > son_tarih:
         return False
-    return girilen_kod.strip() == kayitli_kod
+    dogru_mu = girilen_kod.strip() == kayitli_kod
+    if dogru_mu:
+        otp_dogrulamayi_kaydet(kullanici_adi)
+    return dogru_mu
 
 
 def otp_aktiflestir(kullanici_adi: str, email: str):
@@ -564,7 +593,7 @@ if not st.session_state.giris_yapildi:
                     st.warning(t("alanlari_doldur_uyari"))
                 elif kullanici_giris_yap(giris_kadi, giris_sifre):
                     otp_bilgi = kullanici_otp_bilgisi(giris_kadi)
-                    if otp_bilgi.get("otp_aktif") and otp_bilgi.get("email"):
+                    if otp_bilgi.get("otp_aktif") and otp_bilgi.get("email") and not otp_guvenilir_mi(giris_kadi):
                         with st.spinner("Kod e-postana gönderiliyor..."):
                             otp_kod_uret_ve_gonder(giris_kadi, otp_bilgi["email"])
                         st.session_state.otp_bekleniyor = True
