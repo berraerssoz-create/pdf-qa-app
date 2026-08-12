@@ -8,8 +8,9 @@ import hashlib
 import secrets
 import html as html_lib
 import io
-import pyotp
-import qrcode
+import smtplib
+from email.mime.text import MIMEText
+from datetime import datetime, timedelta, timezone
 import streamlit as st
 import google.generativeai as genai
 from langchain_community.document_loaders import PyPDFLoader
@@ -417,42 +418,66 @@ def kullanici_admin_mi(kullanici_adi: str) -> bool:
 
 
 # ============================================================
-# OTP / 2FA (Google Authenticator - TOTP)
+# OTP / 2FA (e-posta ile dogrulama kodu)
 # ============================================================
 def kullanici_otp_bilgisi(kullanici_adi: str):
     sb = supabase_baglantisi()
-    sonuc = sb.table("kullanicilar").select("otp_secret, otp_aktif").eq("kullanici_adi", kullanici_adi).execute()
+    sonuc = (
+        sb.table("kullanicilar")
+        .select("email, otp_secret, otp_aktif, otp_kod_son_tarih")
+        .eq("kullanici_adi", kullanici_adi)
+        .execute()
+    )
     if sonuc.data:
         return sonuc.data[0]
-    return {"otp_secret": None, "otp_aktif": False}
+    return {"email": None, "otp_secret": None, "otp_aktif": False, "otp_kod_son_tarih": None}
 
 
-def otp_yeni_secret_uret() -> str:
-    return pyotp.random_base32()
+def email_kod_gonder(alici_email: str, kod: str):
+    gonderen = st.secrets["EMAIL_SENDER"]
+    uygulama_sifresi = st.secrets["EMAIL_APP_PASSWORD"]
+
+    mesaj = MIMEText(f"Giris dogrulama kodunuz: {kod}\n\nBu kod 5 dakika gecerlidir.")
+    mesaj["Subject"] = "Kisisel AI Asistanim - Giris Dogrulama Kodu"
+    mesaj["From"] = gonderen
+    mesaj["To"] = alici_email
+
+    with smtplib.SMTP("smtp.gmail.com", 587) as server:
+        server.starttls()
+        server.login(gonderen, uygulama_sifresi)
+        server.sendmail(gonderen, [alici_email], mesaj.as_string())
 
 
-def otp_qr_resmi_uret(kullanici_adi: str, secret: str):
-    uri = pyotp.totp.TOTP(secret).provisioning_uri(
-        name=kullanici_adi, issuer_name="Kisisel AI Asistanim"
-    )
-    qr_img = qrcode.make(uri)
-    buffer = io.BytesIO()
-    qr_img.save(buffer, format="PNG")
-    buffer.seek(0)
-    return buffer
-
-
-def otp_kodu_dogrula(secret: str, kod: str) -> bool:
-    try:
-        return pyotp.TOTP(secret).verify(kod, valid_window=1)
-    except Exception:
-        return False
-
-
-def otp_aktiflestir(kullanici_adi: str, secret: str):
+def otp_kod_uret_ve_gonder(kullanici_adi: str, email: str):
+    kod = f"{secrets.randbelow(1000000):06d}"
+    son_tarih = (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat()
     sb = supabase_baglantisi()
     sb.table("kullanicilar").update({
-        "otp_secret": secret,
+        "otp_secret": kod,
+        "otp_kod_son_tarih": son_tarih,
+    }).eq("kullanici_adi", kullanici_adi).execute()
+    email_kod_gonder(email, kod)
+
+
+def otp_kodu_dogrula(kullanici_adi: str, girilen_kod: str) -> bool:
+    bilgi = kullanici_otp_bilgisi(kullanici_adi)
+    kayitli_kod = bilgi.get("otp_secret")
+    son_tarih_str = bilgi.get("otp_kod_son_tarih")
+    if not kayitli_kod or not son_tarih_str:
+        return False
+    try:
+        son_tarih = datetime.fromisoformat(son_tarih_str.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if datetime.now(timezone.utc) > son_tarih:
+        return False
+    return girilen_kod.strip() == kayitli_kod
+
+
+def otp_aktiflestir(kullanici_adi: str, email: str):
+    sb = supabase_baglantisi()
+    sb.table("kullanicilar").update({
+        "email": email,
         "otp_aktif": True,
     }).eq("kullanici_adi", kullanici_adi).execute()
 
@@ -460,7 +485,6 @@ def otp_aktiflestir(kullanici_adi: str, secret: str):
 def otp_kapat(kullanici_adi: str):
     sb = supabase_baglantisi()
     sb.table("kullanicilar").update({
-        "otp_secret": None,
         "otp_aktif": False,
     }).eq("kullanici_adi", kullanici_adi).execute()
 
@@ -490,13 +514,12 @@ if st.session_state.otp_bekleniyor:
             unsafe_allow_html=True,
         )
         st.markdown("#### 🔐 İki Adımlı Doğrulama")
-        st.caption("Google Authenticator uygulamandaki 6 haneli kodu gir.")
+        st.caption("E-postana gönderilen 6 haneli kodu gir (5 dakika geçerli).")
         otp_kod_girisi = st.text_input("Doğrulama kodu", key="otp_kod_girisi", max_chars=6)
         col_dogrula, col_iptal = st.columns(2)
         with col_dogrula:
             if st.button("Doğrula", key="otp_dogrula_buton"):
-                otp_bilgi = kullanici_otp_bilgisi(st.session_state.otp_bekleyen_kullanici)
-                if otp_bilgi.get("otp_secret") and otp_kodu_dogrula(otp_bilgi["otp_secret"], otp_kod_girisi):
+                if otp_kodu_dogrula(st.session_state.otp_bekleyen_kullanici, otp_kod_girisi):
                     st.session_state.giris_yapildi = True
                     st.session_state.aktif_kullanici = st.session_state.otp_bekleyen_kullanici
                     st.session_state.otp_bekleniyor = False
@@ -539,7 +562,9 @@ if not st.session_state.giris_yapildi:
                     st.warning(t("alanlari_doldur_uyari"))
                 elif kullanici_giris_yap(giris_kadi, giris_sifre):
                     otp_bilgi = kullanici_otp_bilgisi(giris_kadi)
-                    if otp_bilgi.get("otp_aktif"):
+                    if otp_bilgi.get("otp_aktif") and otp_bilgi.get("email"):
+                        with st.spinner("Kod e-postana gönderiliyor..."):
+                            otp_kod_uret_ve_gonder(giris_kadi, otp_bilgi["email"])
                         st.session_state.otp_bekleniyor = True
                         st.session_state.otp_bekleyen_kullanici = giris_kadi
                         st.rerun()
@@ -579,45 +604,26 @@ with st.sidebar:
         st.session_state.aktif_kullanici = None
         st.rerun()
 
-    with st.expander("🔐 İki Adımlı Doğrulama (2FA)"):
+    with st.expander("📧 İki Adımlı Doğrulama (2FA)"):
         otp_bilgi_aktif = kullanici_otp_bilgisi(st.session_state.aktif_kullanici)
 
         if otp_bilgi_aktif.get("otp_aktif"):
-            st.success("2FA aktif ✅")
+            st.success(f"2FA aktif ✅ ({otp_bilgi_aktif.get('email')})")
             if st.button("2FA'yı Kapat", key="otp_kapat_buton"):
                 otp_kapat(st.session_state.aktif_kullanici)
                 st.rerun()
         else:
-            if "otp_kurulum_secret" not in st.session_state:
-                st.session_state.otp_kurulum_secret = None
-
-            if st.session_state.otp_kurulum_secret is None:
-                if st.button("2FA'yı Etkinleştir", key="otp_baslat_buton"):
-                    st.session_state.otp_kurulum_secret = otp_yeni_secret_uret()
+            st.caption("Etkinleştirirsen, her girişte e-postana bir doğrulama kodu gönderilir.")
+            otp_email_girisi = st.text_input(
+                "E-posta adresin", value=otp_bilgi_aktif.get("email") or "", key="otp_email_girisi"
+            )
+            if st.button("2FA'yı Etkinleştir", key="otp_baslat_buton"):
+                if otp_email_girisi and "@" in otp_email_girisi:
+                    otp_aktiflestir(st.session_state.aktif_kullanici, otp_email_girisi)
+                    st.success("2FA etkinleştirildi!")
                     st.rerun()
-            else:
-                st.caption("Google Authenticator ile bu QR kodu tara:")
-                qr_resmi = otp_qr_resmi_uret(
-                    st.session_state.aktif_kullanici, st.session_state.otp_kurulum_secret
-                )
-                st.image(qr_resmi, width=180)
-                otp_onay_kodu = st.text_input(
-                    "Uygulamada beliren 6 haneli kodu gir", key="otp_onay_kodu", max_chars=6
-                )
-                col_onayla, col_vazgec = st.columns(2)
-                with col_onayla:
-                    if st.button("Onayla", key="otp_onayla_buton"):
-                        if otp_kodu_dogrula(st.session_state.otp_kurulum_secret, otp_onay_kodu):
-                            otp_aktiflestir(st.session_state.aktif_kullanici, st.session_state.otp_kurulum_secret)
-                            st.session_state.otp_kurulum_secret = None
-                            st.success("2FA etkinleştirildi!")
-                            st.rerun()
-                        else:
-                            st.error("Kod yanlış, tekrar dene.")
-                with col_vazgec:
-                    if st.button("Vazgeç", key="otp_kurulum_vazgec_buton"):
-                        st.session_state.otp_kurulum_secret = None
-                        st.rerun()
+                else:
+                    st.warning("Geçerli bir e-posta adresi gir.")
 
     if kullanici_admin_mi(st.session_state.aktif_kullanici):
         with st.expander("🛠️ Admin Paneli"):
